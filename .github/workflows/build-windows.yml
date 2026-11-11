@@ -1,0 +1,25 @@
+# Builds the Windows installer on GitHub's servers - handy if you don't develop on Windows.
+name: Build Windows installer
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: >
+          pyinstaller --noconfirm --clean --windowed --name PPTtoWord
+          --icon app.ico --add-data "app.ico;."
+          --collect-data pptx --collect-data docx app.py
+      - run: choco install innosetup -y --no-progress
+      - run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PPTtoWord-Setup
+          path: installer_output/PPTtoWord-Setup.exe
