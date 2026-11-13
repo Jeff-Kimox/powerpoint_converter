@@ -73,8 +73,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("820x760")
-        self.minsize(760, 700)
+        self.geometry("820x700")
+        self.minsize(640, 420)
         self.configure(bg=BG)
         try:
             self.iconbitmap(resource_path("app.ico"))
@@ -97,6 +97,9 @@ class App(tk.Tk):
         self.var_pagenums = tk.BooleanVar(value=True)
         self.var_landscape = tk.BooleanVar(value=False)
         self.var_separator = tk.StringVar(value=SEPARATOR_RULE)
+        self.var_lyrics = tk.BooleanVar(value=False)
+        self.var_lyrics_size = tk.StringVar(value="48")
+        self.var_lyrics_commas = tk.BooleanVar(value=True)
         self.var_same_folder = tk.BooleanVar(value=True)
         self.var_out_dir = tk.StringVar(value="")
         self.var_status = tk.StringVar(value="Add a PowerPoint file to get started.")
@@ -158,10 +161,36 @@ class App(tk.Tk):
         tk.Label(header, text="Turn PowerPoint presentations into clean, editable Word documents",
                  bg=NAVY, fg="#B8C7E0", font=("Segoe UI", 10)).pack(anchor="w", padx=24)
 
-        tk.Frame(self, height=16, bg=BG).pack()
+        # Everything below the header lives in a scrollable area, so shrinking
+        # the window vertically shows a scrollbar instead of hiding buttons.
+        scroll_outer = tk.Frame(self, bg=BG)
+        scroll_outer.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(scroll_outer, bg=BG, highlightthickness=0, bd=0)
+        vscroll = ttk.Scrollbar(scroll_outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vscroll.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        vscroll.pack(side="right", fill="y")
+        body = tk.Frame(self.canvas, bg=BG)
+        self._body_window = self.canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        body.bind("<Configure>", _on_body_configure)
+
+        def _on_canvas_configure(event):
+            self.canvas.itemconfigure(self._body_window, width=event.width)
+        self.canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)        # Windows
+        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))  # Linux
+        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+
+        tk.Frame(body, height=16, bg=BG).pack()
 
         # 1. Files
-        card = self._card(self, "1.  Presentations", "Select one or more .pptx files")
+        card = self._card(body, "1.  Presentations", "Select one or more .pptx files")
         row = ttk.Frame(card, style="Card.TFrame")
         row.pack(fill="x")
         list_wrap = tk.Frame(row, bg=BORDER)
@@ -180,7 +209,7 @@ class App(tk.Tk):
         self.btn_clear.pack(fill="x")
 
         # 2. Output
-        card = self._card(self, "2.  Save location")
+        card = self._card(body, "2.  Save location")
         ttk.Checkbutton(card, text="Save next to each presentation", variable=self.var_same_folder,
                         command=self._toggle_out).pack(anchor="w")
         row = ttk.Frame(card, style="Card.TFrame")
@@ -190,8 +219,25 @@ class App(tk.Tk):
         self.btn_out = ttk.Button(row, text="Browse…", command=self.pick_out_dir, state="disabled")
         self.btn_out.pack(side="left", padx=(8, 0))
 
-        # 3. Options
-        card = self._card(self, "3.  What to include")
+        # 3. Song lyrics mode
+        card = self._card(body, "3.  Song lyrics mode",
+                          "For lyric slides that will be read from a screen: just the words, big and clear")
+        lrow = ttk.Frame(card, style="Card.TFrame")
+        lrow.pack(fill="x")
+        ttk.Checkbutton(lrow, text="Lyrics mode (no 'Slide 1' headings, no bullets)",
+                        variable=self.var_lyrics, command=self._toggle_lyrics).pack(side="left")
+        lrow2 = ttk.Frame(card, style="Card.TFrame")
+        lrow2.pack(fill="x", pady=(6, 0))
+        ttk.Label(lrow2, text="Font size:", style="Card.TLabel").pack(side="left")
+        self.spin_size = ttk.Spinbox(lrow2, from_=12, to=96, width=5, textvariable=self.var_lyrics_size,
+                                     state="disabled")
+        self.spin_size.pack(side="left", padx=(6, 18))
+        self.chk_commas = ttk.Checkbutton(lrow2, text="New line after every comma",
+                                          variable=self.var_lyrics_commas, state="disabled")
+        self.chk_commas.pack(side="left")
+
+        # 4. Options
+        card = self._card(body, "4.  What to include")
         grid = ttk.Frame(card, style="Card.TFrame")
         grid.pack(fill="x")
         opts = [
@@ -218,7 +264,7 @@ class App(tk.Tk):
             ttk.Radiobutton(sep, text=text, value=val, variable=self.var_separator).pack(side="left", padx=(0, 14))
 
         # Convert + progress
-        action = tk.Frame(self, bg=BG)
+        action = tk.Frame(body, bg=BG)
         action.pack(fill="x", padx=24, pady=(4, 0))
         self.btn_convert = ttk.Button(action, text="Convert to Word", style="Accent.TButton",
                                       command=self.start_conversion)
@@ -230,12 +276,12 @@ class App(tk.Tk):
                                      state="disabled")
         self.btn_folder.pack(side="left", padx=(8, 0))
 
-        self.progress = ttk.Progressbar(self, mode="determinate", maximum=1000)
+        self.progress = ttk.Progressbar(body, mode="determinate", maximum=1000)
         self.progress.pack(fill="x", padx=24, pady=(14, 4))
-        ttk.Label(self, textvariable=self.var_status, style="Status.TLabel").pack(anchor="w", padx=24)
+        ttk.Label(body, textvariable=self.var_status, style="Status.TLabel").pack(anchor="w", padx=24)
 
         # Log
-        log_wrap = tk.Frame(self, bg=BORDER)
+        log_wrap = tk.Frame(body, bg=BORDER)
         log_wrap.pack(fill="both", expand=True, padx=24, pady=(8, 16))
         self.log = tk.Text(log_wrap, height=6, wrap="word", state="disabled", bd=0,
                            font=("Consolas", 9), bg="#FBFCFE", fg=TEXT, padx=8, pady=6,
@@ -253,6 +299,14 @@ class App(tk.Tk):
         state = "disabled" if self.var_same_folder.get() else "normal"
         self.entry_out.configure(state=state)
         self.btn_out.configure(state=state)
+
+    def _toggle_lyrics(self):
+        on = self.var_lyrics.get()
+        self.spin_size.configure(state="normal" if on else "disabled")
+        self.chk_commas.configure(state="normal" if on else "disabled")
+        # Sensible defaults for projected lyrics: wide pages, one slide per page
+        self.var_landscape.set(on)
+        self.var_separator.set(SEPARATOR_PAGE if on else SEPARATOR_RULE)
 
     def pick_out_dir(self):
         d = filedialog.askdirectory(title="Choose where to save the Word documents")
@@ -306,7 +360,18 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, "Please choose a save folder, or tick 'Save next to each presentation'.")
             return
 
+        try:
+            lyrics_size = float(self.var_lyrics_size.get())
+            if not 8 <= lyrics_size <= 200:
+                raise ValueError
+        except ValueError:
+            messagebox.showinfo(APP_NAME, "Font size must be a number between 8 and 200.")
+            return
+
         options = ConvertOptions(
+            lyrics_mode=self.var_lyrics.get(),
+            lyrics_font_size=lyrics_size,
+            lyrics_break_commas=self.var_lyrics_commas.get(),
             include_slide_numbers=self.var_numbers.get(),
             include_images=self.var_images.get(),
             include_tables=self.var_tables.get(),

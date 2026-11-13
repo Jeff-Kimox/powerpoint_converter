@@ -66,6 +66,10 @@ class ConvertOptions:
     cover_from_first_slide: bool = True     # first slide -> Title/Subtitle styles
     page_numbers: bool = True               # "Page X" footer
     landscape: bool = False
+    # Song-lyrics mode: no "Slide N" headings, no bullets, big text, a new line after each comma
+    lyrics_mode: bool = False
+    lyrics_font_size: float = 48
+    lyrics_break_commas: bool = True
 
 
 @dataclass
@@ -269,7 +273,22 @@ class PptxToDocx:
             _add_field(fp, "PAGE")
 
     # --------------------------------------------------------------- slide
+    def _convert_lyrics_slide(self, slide):
+        """Lyrics mode: just the words. No headings, bullets or cover page."""
+        self._walk_shapes(slide.shapes)
+        if self.opt.include_notes:
+            self._add_notes(slide)
+        if self.opt.slide_separator == SEPARATOR_RULE:
+            sep = self.doc.add_paragraph()
+            sep.paragraph_format.space_after = Pt(4)
+            _paragraph_border(sep, "bottom")
+        elif self.opt.slide_separator == SEPARATOR_NONE:
+            self.doc.add_paragraph().paragraph_format.space_after = Pt(18)
+
     def _convert_slide(self, slide, number: int, is_first: bool):
+        if self.opt.lyrics_mode:
+            self._convert_lyrics_slide(slide)
+            return
         title_shape = self._find_title(slide)
         title_text = ""
         if title_shape is not None and title_shape.has_text_frame:
@@ -422,6 +441,13 @@ class PptxToDocx:
         )
 
         for para in paragraphs:
+            if self.opt.lyrics_mode:
+                size = self.opt.lyrics_font_size
+                dp = self.doc.add_paragraph()
+                dp.paragraph_format.space_after = Pt(size * 0.3)
+                self._write_runs(dp, para, size_pt=size,
+                                 break_commas=self.opt.lyrics_break_commas)
+                continue
             level = max(0, min(int(para.level or 0), 4))
             kind = self._bullet_kind(para, shape, single)
 
@@ -448,8 +474,26 @@ class PptxToDocx:
 
             self._write_runs(dp, para)
 
-    def _write_runs(self, dest_par, src_par, size_pt: Optional[float] = None, bold: bool = False):
-        """Copy runs from a PowerPoint paragraph, keeping bold/italic/underline/links."""
+    def _write_runs(self, dest_par, src_par, size_pt: Optional[float] = None, bold: bool = False,
+                    break_commas: bool = False):
+        """Copy runs from a PowerPoint paragraph, keeping bold/italic/underline/links.
+
+        With break_commas=True a new line starts after every comma.
+        """
+        commas = (",", "\uff0c")  # normal and full-width comma
+        pending_break = False
+
+        def emit(text, font, url):
+            if url:
+                self._add_hyperlink(dest_par, url, text, font.bold or bold, font.italic, size_pt)
+                return
+            r = dest_par.add_run(text)
+            r.bold = True if (font.bold or bold) else None
+            r.italic = font.italic
+            r.underline = font.underline if font.underline not in (None, False) else None
+            if size_pt:
+                r.font.size = Pt(size_pt)
+
         for el in src_par._p.iterchildren():
             kind = _local(el)
             if kind == "r":
@@ -463,17 +507,28 @@ class PptxToDocx:
                     url = run.hyperlink.address
                 except Exception:
                     pass
-                if url:
-                    self._add_hyperlink(dest_par, url, text, font.bold or bold, font.italic, size_pt)
-                else:
-                    r = dest_par.add_run(text)
-                    r.bold = True if (font.bold or bold) else None
-                    r.italic = font.italic
-                    r.underline = font.underline if font.underline not in (None, False) else None
-                    if size_pt:
-                        r.font.size = Pt(size_pt)
+
+                if not break_commas:
+                    emit(text, font, url)
+                    continue
+
+                if pending_break:
+                    text = text.lstrip(" \t")
+                    if not text:
+                        continue
+                    dest_par.add_run().add_break(WD_BREAK.LINE)
+                    pending_break = False
+                pieces = re.split(r"(?<=[,\uff0c])[ \t]+", text)
+                for k, piece in enumerate(pieces):
+                    if not piece:
+                        continue
+                    if k > 0:
+                        dest_par.add_run().add_break(WD_BREAK.LINE)
+                    emit(piece, font, url)
+                pending_break = pieces[-1].endswith(commas) or (len(pieces) > 1 and pieces[-1] == "")
             elif kind == "br":
                 dest_par.add_run().add_break(WD_BREAK.LINE)
+                pending_break = False
             elif kind == "fld":
                 t = el.find(qn("a:t"))
                 if t is not None and t.text:
@@ -698,11 +753,15 @@ if __name__ == "__main__":
     ap.add_argument("output", nargs="?")
     ap.add_argument("--notes", action="store_true", help="include speaker notes")
     ap.add_argument("--pages", action="store_true", help="start each slide on a new page")
+    ap.add_argument("--lyrics", action="store_true", help="song-lyrics mode (big text, line break after commas)")
+    ap.add_argument("--size", type=float, default=48, help="font size in lyrics mode (default 48)")
     args = ap.parse_args()
 
     out = Path(args.output) if args.output else Path(args.source).with_suffix(".docx")
     opts = ConvertOptions(include_notes=args.notes,
-                          slide_separator=SEPARATOR_PAGE if args.pages else SEPARATOR_RULE)
+                          slide_separator=SEPARATOR_PAGE if args.pages else SEPARATOR_RULE,
+                          lyrics_mode=args.lyrics, lyrics_font_size=args.size,
+                          landscape=args.lyrics)
     res = convert_file(args.source, out, opts)
     print(f"Wrote {res.output_path}  ({res.slides_converted}/{res.slides_total} slides, "
           f"{res.images} images, {res.tables} tables, {res.charts} charts)")
